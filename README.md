@@ -1,8 +1,192 @@
-#Тестовое задание для IT-Guru
+# Запуск проекта и использование
+- Дисклеймер: MVP (не продакш) среда. Пример использования технологий для решения поставленной задачи.
 
-[Ссылка на задание](https://docs.google.com/document/d/1B5ibBRpdu08bouBbtPg5UcCySeht0xyXNOMqYocQvLo/edit?tab=t.0)
+### Требования
 
-Тестовое задание
+- **Python 3.13+**
+- **Docker и Docker Compose** (для PostgreSQL и Redis)
+- **uv** — менеджер пакетов ([установка](https://docs.astral.sh/uv/getting-started/installation/))
+
+### 1. Клонирование и настройка окружения
+
+```bash
+# Установка зависимостей
+make install
+# или: uv sync --all-groups
+```
+
+### 2. Переменные окружения
+
+Создайте файл `.env` в корне проекта (или скопируйте из примера):
+
+```env
+DEBUG=True
+DATABASE_URL=postgres://it-guru:it-guru@localhost:5433/it-guru
+REDIS_URL=redis://localhost:6379/0
+BANK_API_URL=http://localhost:8001
+BANK_REQUEST_TIMEOUT=10.0
+BANK_MAX_RETRIES=3
+```
+
+- `DATABASE_URL` — строка подключения к PostgreSQL (порт 5433 соответствует маппингу в docker-compose).
+- `TEST_DATABASE_URL` — БД для тестов; если не задана, используется БД с именем `{имя_из_DATABASE_URL}_test`.
+- `BANK_API_URL` — URL мока банка (по умолчанию `http://localhost:8001`).
+
+### 3. Запуск инфраструктуры (БД и Redis)
+
+```bash
+# Запустить только PostgreSQL и Redis
+make db
+# или: docker compose up -d db redis
+```
+
+Проверьте, что контейнеры запущены: `docker compose ps`.
+
+### 4. Миграции базы данных
+
+```bash
+# Применение миграций
+make migrate
+```
+
+### 5. Запуск приложения
+
+Нужны **три процесса** (в разных терминалах):
+
+**Терминал 1 — основное API:**
+
+```bash
+make app
+# или: uv run uvicorn src.main:app --reload --port 8000
+```
+
+API доступно по адресу: **http://localhost:8000**
+
+**Терминал 2 — мок банка (для эквайринга):**
+
+```bash
+make bank
+# или: uv run uvicorn bank_mock.main:app --reload --port 8001
+```
+
+Мок банка: **http://localhost:8001**
+
+**Терминал 3 (опционально) — Celery worker и Flower:**
+
+```bash
+# Воркер фоновых задач
+make celery
+
+# В другом терминале — мониторинг Celery
+make flower
+# Flower: http://localhost:5555
+```
+
+### 6. Полный запуск через Docker (альтернатива)
+
+Поднять только БД и Redis, приложение — локально (как выше):
+
+```bash
+make up    # docker compose up -d
+make db    # если нужны только db + redis
+```
+
+Остановка:
+
+```bash
+make down  # docker compose down
+```
+
+---
+
+## Использование API
+
+При `DEBUG=True` доступна интерактивная документация:
+
+- **Swagger UI:** http://localhost:8000/docs
+- **ReDoc:** http://localhost:8000/redoc
+
+### Заказы (Orders)
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/orders` | Список всех заказов |
+| GET | `/orders/{order_id}` | Детали заказа по ID |
+
+У каждого заказа есть поля: `id`, `amount` (сумма), `payment_status` (`not_paid` / `partially_paid` / `paid`), `created_at`, `updated_at`.
+
+### Платежи (Payments)
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| POST | `/payments` | Создать платёж (депозит) |
+| GET | `/payments/by-order/{order_id}` | Список платежей по заказу |
+| GET | `/payments/remaining-balance/{order_id}` | Остаток к оплате по заказу |
+| POST | `/payments/{payment_id}/refund` | Возврат платежа |
+| POST | `/payments/{payment_id}/confirm` | Подтвердить платёж эквайринга (после оплаты в банке) |
+
+**Создание платежа** — тело запроса (JSON):
+
+```json
+{
+  "order_id": 1,
+  "amount": "100.50",
+  "payment_type": "cash"
+}
+```
+
+или для эквайринга:
+
+```json
+{
+  "order_id": 1,
+  "amount": "500.00",
+  "payment_type": "acquiring"
+}
+```
+
+- `payment_type`: `"cash"` (наличные) или `"acquiring"` (эквайринг через банк).
+- Сумма всех платежей по заказу не может превышать сумму заказа.
+
+**Статусы платежа** (`operation_status`): `pending`, `deposited`, `refunded`, `failed`.
+
+Для эквайринга: после создания платёж в статусе `pending`; после оплаты на стороне банка нужно вызвать `POST /payments/{id}/confirm` для синхронизации статуса.
+
+### Пример сценария
+
+1. `GET /orders` — посмотреть заказы, запомнить `order_id` и `amount`.
+2. `GET /payments/remaining-balance/{order_id}` — узнать остаток к оплате.
+3. `POST /payments` с `order_id`, `amount`, `payment_type` — создать платёж (наличные или эквайринг).
+4. Для эквайринга: симулировать оплату в моке банка, затем `POST /payments/{id}/confirm`.
+5. `GET /orders/{order_id}` — проверить обновлённый `payment_status`.
+6. При необходимости: `POST /payments/{id}/refund` — возврат.
+
+---
+
+## Полезные команды (Makefile)
+
+| Команда | Описание |
+|---------|----------|
+| `make help` | Список всех команд |
+| `make install` | Установить зависимости (uv) |
+| `make pre-commit` | Установить pre-commit хуки |
+| `make up` / `make down` | Запуск / остановка Docker (db, redis) |
+| `make app` | Запуск основного приложения (порт 8000) |
+| `make bank` | Запуск мока банка (порт 8001) |
+| `make db` | Запуск БД, Redis + создание тестовой БД |
+| `make celery` | Запуск Celery worker |
+| `make flower` | Запуск Flower (порт 5555) |
+| `make migrate-init` | Инициализация БД (aerich) |
+| `make migrate` | Применить миграции |
+| `make migrate-new name="..."` | Создать новую миграцию |
+| `make lint` | Проверка кода (ruff) |
+| `make format` | Форматирование кода |
+| `make test` | Запуск тестов (pytest) |
+| `make clean` | Удалить кэш и временные файлы |
+
+---
+
+## ТЗ
 
 1. Спроектировать и реализовать сервис работы с платежами по заказу
 

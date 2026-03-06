@@ -10,10 +10,14 @@ dependencies = [
     "aerich",
     "pydantic-settings",
     "httpx",
+    "pytest>=9.0.2",
+    "celery[redis]",
+    "flower",
 ]
 
 [dependency-groups]
 dev = [
+    "faker",
     "pytest",
     "pytest-asyncio",
     "ruff",
@@ -46,3 +50,6 @@ select = [
     "SIM",
 ]
 ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/migrations/**" = ["E501"]
